@@ -1,0 +1,159 @@
+/**
+ * Frontend styles for Product Licenses
+ * Path: modules/productlicenses/views/css/front.css
+ */
+
+.product-licenses-wrapper {
+    margin: 30px 0;
+    padding: 25px;
+    background: #f8f9fa;
+    border-radius: 8px;
+}
+
+.license-title {
+    font-size: 24px;
+    font-weight: 600;
+    margin-bottom: 20px;
+    color: #333;
+}
+
+.license-options {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 20px;
+    margin-bottom: 20px;
+}
+
+.license-option {
+    position: relative;
+}
+
+.license-radio {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.license-card {
+    display: block;
+    position: relative;
+    background: #fff;
+    border: 2px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 20px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    min-height: 200px;
+}
+
+.license-card:hover {
+    border-color: #007bff;
+    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.15);
+    transform: translateY(-2px);
+}
+
+.license-radio:checked + .license-content,
+.license-card.active {
+    border-color: #007bff;
+    background: #f0f8ff;
+    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.2);
+}
+
+.license-content {
+    position: relative;
+}
+
+.license-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.license-name {
+    font-size: 18px;
+    font-weight: 600;
+    color: #333;
+}
+
+.license-badge {
+    background: #28a745;
+    color: #fff;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.license-price {
+    font-size: 28px;
+    font-weight: 700;
+    color: #007bff;
+    margin-bottom: 15px;
+}
+
+.license-description {
+    font-size: 14px;
+    color: #666;
+    line-height: 1.5;
+}
+
+.license-checkmark {
+    position: absolute;
+    top: 15px;
+    right: 15px;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.license-radio:checked ~ .license-checkmark,
+.license-card.active .license-checkmark {
+    opacity: 1;
+}
+
+.license-checkmark i {
+    color: #007bff;
+    font-size: 24px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .license-options {
+        grid-template-columns: 1fr;
+    }
+    
+    .product-licenses-wrapper {
+        padding: 15px;
+    }
+    
+    .license-title {
+        font-size: 20px;
+    }
+}
+
+/* Animation for price update */
+@keyframes priceUpdate {
+    0% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.1);
+        color: #28a745;
+    }
+    100% {
+        transform: scale(1);
+    }
+}
+
+.price-updating {
+    animation: priceUpdate 0.5s ease;
+}
+
+/* Product page specific adjustments */
+.product-prices .current-price-value {
+    transition: all 0.3s ease;
+}
+
+.product-add-to-cart {
+    margin-top: 20px;
+}
