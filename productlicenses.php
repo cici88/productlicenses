@@ -270,64 +270,64 @@ class ProductLicenses extends Module
     }
 
     public function hookDisplayProductButtons($params)
-    {
-        $product = $params['product'];
-        
-        if (!$product['is_virtual']) {
-            return '';
-        }
-
-        $id_product = (int)$product['id_product'];
-        $license_enabled = $this->getLicenseStatus($id_product);
-
-        if (!$license_enabled) {
-            return '';
-        }
-
-        // Get base price - try multiple keys
-        $base_price = 0;
-        if (isset($product['price_amount'])) {
-            $base_price = (float)$product['price_amount'];
-        } elseif (isset($product['price'])) {
-            $base_price = (float)$product['price'];
-        } elseif (isset($product['price_without_reduction'])) {
-            $base_price = (float)$product['price_without_reduction'];
-        } else {
-            // Fallback - get from Product object
-            $productObj = new Product($id_product);
-            $base_price = (float)$productObj->getPrice(false);
-        }
-        
-        $licenses = [
-            'personal' => [
-                'name' => $this->l('Personal License'),
-                'increase' => Configuration::get('PRODUCT_LICENSE_PERSONAL'),
-                'price' => $base_price * (1 + Configuration::get('PRODUCT_LICENSE_PERSONAL') / 100)
-            ],
-            'commercial' => [
-                'name' => $this->l('Commercial License'),
-                'increase' => Configuration::get('PRODUCT_LICENSE_COMMERCIAL'),
-                'price' => $base_price * (1 + Configuration::get('PRODUCT_LICENSE_COMMERCIAL') / 100)
-            ],
-            'extended' => [
-                'name' => $this->l('Extended License'),
-                'increase' => Configuration::get('PRODUCT_LICENSE_EXTENDED'),
-                'price' => $base_price * (1 + Configuration::get('PRODUCT_LICENSE_EXTENDED') / 100)
-            ]
-        ];
-
-        // Get currency object properly
-        $currency = $this->context->currency;
-        
-        $this->context->smarty->assign([
-            'licenses' => $licenses,
-            'id_product' => $id_product,
-            'currency_sign' => $currency->sign,
-            'currency_iso' => $currency->iso_code
-        ]);
-
-        return $this->display(__FILE__, 'views/templates/front/license_selector.tpl');
+{
+    $product = $params['product'];
+    
+    if (!$product['is_virtual']) {
+        return '';
     }
+
+    $id_product = (int)$product['id_product'];
+    $license_enabled = $this->getLicenseStatus($id_product);
+
+    if (!$license_enabled) {
+        return '';
+    }
+
+    // Get price with tax consideration
+    $price_display = Group::getPriceDisplayMethod(Group::getCurrent()->id);
+    $base_price = Product::getPriceStatic(
+        $id_product,
+        !$price_display,
+        null,
+        6
+    );
+    
+    $licenses = $this->buildLicenseOptions($base_price);
+    
+    $this->context->smarty->assign([
+        'licenses' => $licenses,
+        'id_product' => $id_product,
+        'currency' => $this->context->currency,
+        'price_display' => $price_display
+    ]);
+
+    return $this->display(__FILE__, 'views/templates/front/license_selector.tpl');
+}
+
+private function buildLicenseOptions($base_price)
+{
+    return [
+        'personal' => [
+            'name' => $this->l('Personal License'),
+            'increase' => (int)Configuration::get('PRODUCT_LICENSE_PERSONAL'),
+            'price' => $base_price * (1 + Configuration::get('PRODUCT_LICENSE_PERSONAL') / 100),
+            'description' => $this->l('For personal use only')
+        ],
+        'commercial' => [
+            'name' => $this->l('Commercial License'),
+            'increase' => (int)Configuration::get('PRODUCT_LICENSE_COMMERCIAL'),
+            'price' => $base_price * (1 + Configuration::get('PRODUCT_LICENSE_COMMERCIAL') / 100),
+            'description' => $this->l('For commercial projects')
+        ],
+        'extended' => [
+            'name' => $this->l('Extended License'),
+            'increase' => (int)Configuration::get('PRODUCT_LICENSE_EXTENDED'),
+            'price' => $base_price * (1 + Configuration::get('PRODUCT_LICENSE_EXTENDED') / 100),
+            'description' => $this->l('Full rights including resale')
+        ]
+    ];
+}
 
     public function hookActionGetProductPropertiesAfter($params)
     {
