@@ -14,16 +14,39 @@ if (!defined('_PS_VERSION_')) {
 
 /**/
 
+// Update hookActionCartSave in productlicenses.php
 public function hookActionCartSave($params)
 {
-    // DEBUG
-    error_log('=== HOOK ActionCartSave CALLED ===');
-    error_log('id_product from GET: ' . Tools::getValue('id_product'));
-    error_log('license_type: ' . Tools::getValue('product_license'));
-    error_log('license_price: ' . Tools::getValue('product_license_price'));
+    if (!isset($params['cart'])) {
+        return;
+    }
     
-    if (isset($params['cart'])) {
-        // ... ostatak koda
+    $cart = $params['cart'];
+    $id_product = (int)Tools::getValue('id_product');
+    $id_product_attribute = (int)Tools::getValue('id_product_attribute');
+    $license_type = Tools::getValue('product_license');
+    
+    if (!$id_product || !$license_type) {
+        return;
+    }
+    
+    // Get product to calculate price
+    $product = new Product($id_product, false, $this->context->language->id);
+    $base_price = $product->getPrice(false, $id_product_attribute);
+    
+    // Calculate license price
+    $increase = $this->getLicenseIncrease($license_type);
+    $license_price = $base_price * (1 + $increase / 100);
+    
+    // Save to database
+    $this->saveCartLicenseInfo(
+        $cart->id, 
+        $id_product, 
+        $license_type, 
+        $license_price,
+        $id_product_attribute
+    );
+}
 /**/
 class ProductLicenses extends Module
 {
