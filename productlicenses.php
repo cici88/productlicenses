@@ -11,6 +11,20 @@ if (!defined('_PS_VERSION_')) {
     exit;
 }
 
+
+/**/
+
+public function hookActionCartSave($params)
+{
+    // DEBUG
+    error_log('=== HOOK ActionCartSave CALLED ===');
+    error_log('id_product from GET: ' . Tools::getValue('id_product'));
+    error_log('license_type: ' . Tools::getValue('product_license'));
+    error_log('license_price: ' . Tools::getValue('product_license_price'));
+    
+    if (isset($params['cart'])) {
+        // ... ostatak koda
+/**/
 class ProductLicenses extends Module
 {
     public function __construct()
@@ -76,7 +90,8 @@ class ProductLicenses extends Module
                $this->registerHook('actionCartSave') &&
                $this->registerHook('actionGetProductPropertiesAfter') &&
                $this->registerHook('displayShoppingCartFooter') &&
-               $this->registerHook('actionValidateOrder');
+               $this->registerHook('actionValidateOrder') &&
+               $this->registerHook('actionBeforeCartUpdateQty');
     }
 
     public function uninstall()
@@ -246,7 +261,19 @@ class ProductLicenses extends Module
             return '';
         }
 
-        $base_price = (float)$product['price_amount'];
+        // Get base price - try multiple keys
+        $base_price = 0;
+        if (isset($product['price_amount'])) {
+            $base_price = (float)$product['price_amount'];
+        } elseif (isset($product['price'])) {
+            $base_price = (float)$product['price'];
+        } elseif (isset($product['price_without_reduction'])) {
+            $base_price = (float)$product['price_without_reduction'];
+        } else {
+            // Fallback - get from Product object
+            $productObj = new Product($id_product);
+            $base_price = (float)$productObj->getPrice(false);
+        }
         
         $licenses = [
             'personal' => [
@@ -290,7 +317,19 @@ class ProductLicenses extends Module
                 $selected_license = 'personal';
             }
             
-            $base_price = $product['price_amount'];
+           // Get base price - try multiple keys
+$base_price = 0;
+if (isset($product['price_amount'])) {
+    $base_price = (float)$product['price_amount'];
+} elseif (isset($product['price'])) {
+    $base_price = (float)$product['price'];
+} elseif (isset($product['price_without_reduction'])) {
+    $base_price = (float)$product['price_without_reduction'];
+} else {
+    // Fallback - get from Product object
+    $productObj = new Product($id_product);
+    $base_price = (float)$productObj->getPrice(false);
+}
             $increase = 0;
             
             switch ($selected_license) {
@@ -318,10 +357,25 @@ class ProductLicenses extends Module
             $cart = $params['cart'];
             $id_product = (int)Tools::getValue('id_product');
             $license_type = Tools::getValue('product_license');
-            $license_price = Tools::getValue('product_license_price');
+            $license_price = (float)Tools::getValue('product_license_price');
             
-            if ($id_product && $license_type) {
+            if ($id_product && $license_type && $license_price) {
+                // Save license info
                 $this->saveCartLicenseInfo($cart->id, $id_product, $license_type, $license_price);
+                
+                // DIREKTNO a탑uriranje cene u cart_product tabeli
+                Db::getInstance()->execute("
+                    UPDATE `" . _DB_PREFIX_ . "cart_product` 
+                    SET price = " . (float)$license_price . "
+                    WHERE id_cart = " . (int)$cart->id . " 
+                    AND id_product = " . (int)$id_product . "
+                    LIMIT 1
+                ");
+                
+                // Force cart recalculation
+                $cart->update(true);
+                
+                PrestaShopLogger::addLog('ProductLicenses: Updated price for product ' . $id_product . ' to ' . $license_price);
             }
         }
     }
@@ -374,6 +428,27 @@ class ProductLicenses extends Module
             }
         }
     }
+    
+    public function hookActionBeforeCartUpdateQty($params)
+    {
+        // This hook fires before adding product to cart
+        // We can intercept and set the correct price
+        $id_product = (int)$params['product']->id;
+        $license_type = Tools::getValue('product_license');
+        $license_price = (float)Tools::getValue('product_license_price');
+        
+        if ($license_type && $license_price && $this->getLicenseStatus($id_product)) {
+            // Store in static variable for use in cart
+            self::$pending_license = [
+                'id_product' => $id_product,
+                'license_type' => $license_type,
+                'license_price' => $license_price
+            ];
+        }
+    }
+
+    // Static variable to store pending license info
+    private static $pending_license = null;
 
     // ========== PRIVATE METHODS ==========
 
@@ -483,6 +558,19 @@ class ProductLicenses extends Module
              AND id_product = " . (int)$id_product
         );
     }
+    
+    /**
+     * Public wrappers for use in AJAX handlers
+     */
+    public function saveCartLicenseInfoPublic($id_cart, $id_product, $license_type, $license_price)
+    {
+        return $this->saveCartLicenseInfo($id_cart, $id_product, $license_type, $license_price);
+    }
+    
+    public function updateCartProductPricePublic($cart, $id_product, $license_price)
+    {
+        return $this->updateCartProductPrice($cart, $id_product, $license_price);
+    }
 
     private function saveOrderLicenseInfo($id_order, $id_product, $license_type, $license_price)
     {
@@ -496,5 +584,60 @@ class ProductLicenses extends Module
                 'date_add' => date('Y-m-d H:i:s')
             ]
         );
+    }
+    
+    /**
+     * Update product price in cart based on license
+     */
+    private function createSpecificPriceForCart($cart, $id_product, $new_price)
+    {
+        // Get product original price
+        $product = new Product($id_product);
+        $original_price = $product->getPrice(false);
+        
+        // Calculate reduction
+        $reduction = $original_price - $new_price;
+        
+        // Delete existing specific price for this cart/product
+        Db::getInstance()->execute(
+            "DELETE FROM `" . _DB_PREFIX_ . "specific_price` 
+             WHERE id_product = " . (int)$id_product . " 
+             AND id_cart = " . (int)$cart->id
+        );
+        
+        // Only create if there's a price difference
+        if (abs($reduction) > 0.01) {
+            try {
+                // Insert specific price
+                Db::getInstance()->insert(
+                    'specific_price',
+                    [
+                        'id_product' => (int)$id_product,
+                        'id_shop' => (int)$this->context->shop->id,
+                        'id_cart' => (int)$cart->id,
+                        'id_customer' => (int)$cart->id_customer,
+                        'id_currency' => 0,
+                        'id_country' => 0,
+                        'id_group' => 0,
+                        'id_product_attribute' => 0,
+                        'price' => $new_price,
+                        'from_quantity' => 1,
+                        'reduction' => 0,
+                        'reduction_tax' => 1,
+                        'reduction_type' => 'amount',
+                        'from' => date('Y-m-d 00:00:00'),
+                        'to' => date('Y-m-d 23:59:59', strtotime('+1 day'))
+                    ]
+                );
+                
+                // Clear price cache
+                Product::flushPriceCache();
+                
+                PrestaShopLogger::addLog('ProductLicenses: Created specific price for product ' . $id_product . ' = ' . $new_price);
+                
+            } catch (Exception $e) {
+                PrestaShopLogger::addLog('ProductLicenses: Error creating specific price - ' . $e->getMessage(), 3);
+            }
+        }
     }
 }
