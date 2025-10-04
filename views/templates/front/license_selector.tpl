@@ -80,3 +80,16 @@
         <p>{l s='All licenses include lifetime access to the product. Choose the license that best fits your intended use.' mod='productlicenses'}</p>
     </div>
 </div>
+
+<script type="text/javascript">
+// Add selected license to cart
+if (typeof prestashop !== 'undefined') {
+    prestashop.on('updateCart', function(event) {
+        var selectedLicense = document.querySelector('input[name="product_license_{$id_product}"]:checked');
+        if (selectedLicense) {
+            // Store license info in customization or cart
+            console.log('Selected license:', selectedLicense.value);
+        }
+    });
+}
+</script>
