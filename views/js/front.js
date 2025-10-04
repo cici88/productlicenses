@@ -49,8 +49,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     updatePrice(priceElement, selectedPrice);
                 }
                 
-                // Update quantity input if exists
-                updateQuantityData(selectedLicense, selectedPrice);
+                // Update add to cart form
+                updateAddToCartForm(productId, selectedLicense, selectedPrice);
                 
                 console.log('License selected:', selectedLicense, 'Price:', selectedPrice);
             });
@@ -68,6 +68,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             });
         });
+        
+        // Initialize with default license
+        var defaultRadio = wrapper.querySelector('.license-radio:checked');
+        if (defaultRadio) {
+            var defaultPrice = parseFloat(defaultRadio.getAttribute('data-price'));
+            var defaultLicense = defaultRadio.value;
+            updateAddToCartForm(productId, defaultLicense, defaultPrice);
+        }
     });
     
     /**
@@ -97,62 +105,36 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     /**
-     * Update quantity/add to cart data with license info
+     * Update add to cart form with license info
      */
-    function updateQuantityData(license, price) {
-        var addToCartForm = document.querySelector('form[action*="cart"]');
-        if (addToCartForm) {
-            // Remove existing license input if any
-            var existingInput = addToCartForm.querySelector('input[name="product_license"]');
-            if (existingInput) {
-                existingInput.remove();
-            }
+    function updateAddToCartForm(productId, license, price) {
+        // Find all add to cart forms
+        var forms = document.querySelectorAll('form[action*="cart"]');
+        
+        forms.forEach(function(form) {
+            // Remove existing license inputs
+            var existingLicense = form.querySelector('input[name="product_license"]');
+            var existingPrice = form.querySelector('input[name="product_license_price"]');
             
-            // Add new hidden input with license info
+            if (existingLicense) existingLicense.remove();
+            if (existingPrice) existingPrice.remove();
+            
+            // Add new hidden inputs
             var licenseInput = document.createElement('input');
             licenseInput.type = 'hidden';
             licenseInput.name = 'product_license';
             licenseInput.value = license;
-            addToCartForm.appendChild(licenseInput);
+            form.appendChild(licenseInput);
             
-            // Add price input
             var priceInput = document.createElement('input');
             priceInput.type = 'hidden';
             priceInput.name = 'product_license_price';
             priceInput.value = price;
-            addToCartForm.appendChild(priceInput);
-        }
-    }
-    
-    /**
-     * Handle add to cart with license info
-     */
-    var addToCartButtons = document.querySelectorAll('.add-to-cart, button[data-button-action="add-to-cart"]');
-    addToCartButtons.forEach(function(button) {
-        button.addEventListener('click', function(e) {
-            var licenseWrapper = document.querySelector('.product-licenses-wrapper');
-            if (licenseWrapper) {
-                var selectedRadio = licenseWrapper.querySelector('.license-radio:checked');
-                if (selectedRadio) {
-                    var license = selectedRadio.value;
-                    var price = selectedRadio.getAttribute('data-price');
-                    
-                    // Store in session/local storage for cart
-                    try {
-                        var cartLicenses = JSON.parse(sessionStorage.getItem('cart_licenses') || '{}');
-                        var productId = licenseWrapper.id.replace('product-licenses-', '');
-                        cartLicenses[productId] = {
-                            license: license,
-                            price: price
-                        };
-                        sessionStorage.setItem('cart_licenses', JSON.stringify(cartLicenses));
-                    } catch (e) {
-                        console.error('Error storing license info:', e);
-                    }
-                }
-            }
+            form.appendChild(priceInput);
         });
-    });
+        
+        console.log('Form updated with license:', license, 'price:', price);
+    }
 });
 
 /**
@@ -160,12 +142,27 @@ document.addEventListener('DOMContentLoaded', function() {
  */
 if (typeof prestashop !== 'undefined') {
     prestashop.on('updateProduct', function(event) {
-        // Reinitialize license selectors if product is updated via AJAX
         console.log('Product updated, reinitializing licenses');
+        // Trigger change event on selected license to update form
+        setTimeout(function() {
+            var selectedRadio = document.querySelector('.license-radio:checked');
+            if (selectedRadio) {
+                selectedRadio.dispatchEvent(new Event('change'));
+            }
+        }, 100);
     });
     
     prestashop.on('updatedProduct', function(event) {
-        // Handle product update completion
         console.log('Product update completed');
     });
 }
+// Osiguraj da se licenca šalje pri dodavanju u korpu
+document.addEventListener('click', function(e) {
+    var target = e.target.closest('[data-button-action="add-to-cart"]');
+    if (target) {
+        var selectedRadio = document.querySelector('.license-radio:checked');
+        if (selectedRadio) {
+            console.log('Add to cart clicked with license:', selectedRadio.value);
+        }
+    }
+});
