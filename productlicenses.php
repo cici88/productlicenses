@@ -11,50 +11,13 @@ if (!defined('_PS_VERSION_')) {
     exit;
 }
 
-
-/**/
-
-// Update hookActionCartSave in productlicenses.php
-public function hookActionCartSave($params)
-{
-    if (!isset($params['cart'])) {
-        return;
-    }
-    
-    $cart = $params['cart'];
-    $id_product = (int)Tools::getValue('id_product');
-    $id_product_attribute = (int)Tools::getValue('id_product_attribute');
-    $license_type = Tools::getValue('product_license');
-    
-    if (!$id_product || !$license_type) {
-        return;
-    }
-    
-    // Get product to calculate price
-    $product = new Product($id_product, false, $this->context->language->id);
-    $base_price = $product->getPrice(false, $id_product_attribute);
-    
-    // Calculate license price
-    $increase = $this->getLicenseIncrease($license_type);
-    $license_price = $base_price * (1 + $increase / 100);
-    
-    // Save to database
-    $this->saveCartLicenseInfo(
-        $cart->id, 
-        $id_product, 
-        $license_type, 
-        $license_price,
-        $id_product_attribute
-    );
-}
-/**/
 class ProductLicenses extends Module
 {
     public function __construct()
     {
         $this->name = 'productlicenses';
         $this->tab = 'front_office_features';
-        $this->version = '1.0.0';
+        $this->version = '2.0.0';
         $this->author = 'Your Name';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = [
@@ -99,6 +62,11 @@ class ProductLicenses extends Module
             return false;
         }
 
+        // Create license keys table
+        if (!$this->createLicenseKeysTable()) {
+            return false;
+        }
+
         // Set default configuration values
         Configuration::updateValue('PRODUCT_LICENSE_PERSONAL', 0);
         Configuration::updateValue('PRODUCT_LICENSE_COMMERCIAL', 50);
@@ -114,7 +82,8 @@ class ProductLicenses extends Module
                $this->registerHook('actionGetProductPropertiesAfter') &&
                $this->registerHook('displayShoppingCartFooter') &&
                $this->registerHook('actionValidateOrder') &&
-               $this->registerHook('actionBeforeCartUpdateQty');
+               $this->registerHook('displayOrderDetail') &&
+               $this->registerHook('actionCartUpdateQuantityBefore');
     }
 
     public function uninstall()
@@ -127,7 +96,8 @@ class ProductLicenses extends Module
         $tables = [
             'product_license',
             'cart_product_license',
-            'order_product_license'
+            'order_product_license',
+            'product_license_keys'
         ];
         
         foreach ($tables as $table) {
@@ -270,64 +240,40 @@ class ProductLicenses extends Module
     }
 
     public function hookDisplayProductButtons($params)
-{
-    $product = $params['product'];
-    
-    if (!$product['is_virtual']) {
-        return '';
+    {
+        $product = $params['product'];
+        
+        if (!$product['is_virtual']) {
+            return '';
+        }
+
+        $id_product = (int)$product['id_product'];
+        $license_enabled = $this->getLicenseStatus($id_product);
+
+        if (!$license_enabled) {
+            return '';
+        }
+
+        // Get price with tax consideration
+        $price_display = Group::getPriceDisplayMethod(Group::getCurrent()->id);
+        $base_price = Product::getPriceStatic(
+            $id_product,
+            !$price_display,
+            null,
+            6
+        );
+        
+        $licenses = $this->buildLicenseOptions($base_price);
+        
+        $this->context->smarty->assign([
+            'licenses' => $licenses,
+            'id_product' => $id_product,
+            'currency' => $this->context->currency,
+            'price_display' => $price_display
+        ]);
+
+        return $this->display(__FILE__, 'views/templates/front/license_selector.tpl');
     }
-
-    $id_product = (int)$product['id_product'];
-    $license_enabled = $this->getLicenseStatus($id_product);
-
-    if (!$license_enabled) {
-        return '';
-    }
-
-    // Get price with tax consideration
-    $price_display = Group::getPriceDisplayMethod(Group::getCurrent()->id);
-    $base_price = Product::getPriceStatic(
-        $id_product,
-        !$price_display,
-        null,
-        6
-    );
-    
-    $licenses = $this->buildLicenseOptions($base_price);
-    
-    $this->context->smarty->assign([
-        'licenses' => $licenses,
-        'id_product' => $id_product,
-        'currency' => $this->context->currency,
-        'price_display' => $price_display
-    ]);
-
-    return $this->display(__FILE__, 'views/templates/front/license_selector.tpl');
-}
-
-private function buildLicenseOptions($base_price)
-{
-    return [
-        'personal' => [
-            'name' => $this->l('Personal License'),
-            'increase' => (int)Configuration::get('PRODUCT_LICENSE_PERSONAL'),
-            'price' => $base_price * (1 + Configuration::get('PRODUCT_LICENSE_PERSONAL') / 100),
-            'description' => $this->l('For personal use only')
-        ],
-        'commercial' => [
-            'name' => $this->l('Commercial License'),
-            'increase' => (int)Configuration::get('PRODUCT_LICENSE_COMMERCIAL'),
-            'price' => $base_price * (1 + Configuration::get('PRODUCT_LICENSE_COMMERCIAL') / 100),
-            'description' => $this->l('For commercial projects')
-        ],
-        'extended' => [
-            'name' => $this->l('Extended License'),
-            'increase' => (int)Configuration::get('PRODUCT_LICENSE_EXTENDED'),
-            'price' => $base_price * (1 + Configuration::get('PRODUCT_LICENSE_EXTENDED') / 100),
-            'description' => $this->l('Full rights including resale')
-        ]
-    ];
-}
 
     public function hookActionGetProductPropertiesAfter($params)
     {
@@ -340,19 +286,7 @@ private function buildLicenseOptions($base_price)
                 $selected_license = 'personal';
             }
             
-           // Get base price - try multiple keys
-$base_price = 0;
-if (isset($product['price_amount'])) {
-    $base_price = (float)$product['price_amount'];
-} elseif (isset($product['price'])) {
-    $base_price = (float)$product['price'];
-} elseif (isset($product['price_without_reduction'])) {
-    $base_price = (float)$product['price_without_reduction'];
-} else {
-    // Fallback - get from Product object
-    $productObj = new Product($id_product);
-    $base_price = (float)$productObj->getPrice(false);
-}
+            $base_price = $product['price_amount'];
             $increase = 0;
             
             switch ($selected_license) {
@@ -376,31 +310,37 @@ if (isset($product['price_amount'])) {
 
     public function hookActionCartSave($params)
     {
-        if (isset($params['cart'])) {
-            $cart = $params['cart'];
-            $id_product = (int)Tools::getValue('id_product');
-            $license_type = Tools::getValue('product_license');
-            $license_price = (float)Tools::getValue('product_license_price');
-            
-            if ($id_product && $license_type && $license_price) {
-                // Save license info
-                $this->saveCartLicenseInfo($cart->id, $id_product, $license_type, $license_price);
-                
-                // DIREKTNO a탑uriranje cene u cart_product tabeli
-                Db::getInstance()->execute("
-                    UPDATE `" . _DB_PREFIX_ . "cart_product` 
-                    SET price = " . (float)$license_price . "
-                    WHERE id_cart = " . (int)$cart->id . " 
-                    AND id_product = " . (int)$id_product . "
-                    LIMIT 1
-                ");
-                
-                // Force cart recalculation
-                $cart->update(true);
-                
-                PrestaShopLogger::addLog('ProductLicenses: Updated price for product ' . $id_product . ' to ' . $license_price);
-            }
+        if (!isset($params['cart'])) {
+            return;
         }
+        
+        $cart = $params['cart'];
+        $id_product = (int)Tools::getValue('id_product');
+        $id_product_attribute = (int)Tools::getValue('id_product_attribute');
+        $license_type = Tools::getValue('product_license');
+        
+        if (!$id_product || !$license_type) {
+            return;
+        }
+        
+        // Get product to calculate price
+        $product = new Product($id_product, false, $this->context->language->id);
+        $base_price = $product->getPrice(false, $id_product_attribute);
+        
+        // Calculate license price
+        $increase = $this->getLicenseIncrease($license_type);
+        $license_price = $base_price * (1 + $increase / 100);
+        
+        // Save to database
+        $this->saveCartLicenseInfo(
+            $cart->id, 
+            $id_product, 
+            $license_type, 
+            $license_price,
+            $id_product_attribute,
+            $base_price,
+            $increase
+        );
     }
 
     public function hookDisplayShoppingCartFooter($params)
@@ -436,44 +376,54 @@ if (isset($product['price_amount'])) {
     {
         $cart = $params['cart'];
         $order = $params['order'];
-        $products = $cart->getProducts();
         
-        foreach ($products as $product) {
-            $license_info = $this->getCartLicenseInfo($cart->id, $product['id_product']);
+        // Get all products with licenses
+        $license_products = Db::getInstance()->executeS(
+            "SELECT * FROM `" . _DB_PREFIX_ . "cart_product_license` 
+             WHERE id_cart = " . (int)$cart->id
+        );
+        
+        foreach ($license_products as $license_data) {
+            // Save order license info
+            $this->saveOrderLicenseInfo(
+                $order->id,
+                $license_data['id_product'],
+                $license_data['license_type'],
+                $license_data['license_price'],
+                isset($license_data['id_product_attribute']) ? $license_data['id_product_attribute'] : 0
+            );
             
-            if ($license_info) {
-                $this->saveOrderLicenseInfo(
-                    $order->id,
-                    $product['id_product'],
-                    $license_info['license_type'],
-                    $license_info['license_price']
-                );
-            }
+            // Generate license key
+            $license_key = $this->generateLicenseKey($order->id, $license_data['id_product']);
+            
+            // Save license key
+            $this->saveLicenseKey(
+                $order->id,
+                $license_data['id_product'],
+                $license_key,
+                $license_data['license_type']
+            );
         }
     }
-    
-    public function hookActionBeforeCartUpdateQty($params)
+
+    public function hookDisplayOrderDetail($params)
     {
-        // This hook fires before adding product to cart
-        // We can intercept and set the correct price
-        $id_product = (int)$params['product']->id;
-        $license_type = Tools::getValue('product_license');
-        $license_price = (float)Tools::getValue('product_license_price');
+        $order = $params['order'];
+        $licenses = $this->getOrderLicenses($order->id);
         
-        if ($license_type && $license_price && $this->getLicenseStatus($id_product)) {
-            // Store in static variable for use in cart
-            self::$pending_license = [
-                'id_product' => $id_product,
-                'license_type' => $license_type,
-                'license_price' => $license_price
-            ];
+        if (empty($licenses)) {
+            return '';
         }
+        
+        $this->context->smarty->assign([
+            'licenses' => $licenses,
+            'order' => $order
+        ]);
+        
+        return $this->display(__FILE__, 'views/templates/front/order_licenses.tpl');
     }
 
-    // Static variable to store pending license info
-    private static $pending_license = null;
-
-    // ========== PRIVATE METHODS ==========
+    // ========== PRIVATE METHODS - DATABASE TABLES ==========
 
     private function createCartLicenseTable()
     {
@@ -481,10 +431,15 @@ if (isset($product['price_amount'])) {
             `id_cart_product_license` INT(11) UNSIGNED NOT NULL AUTO_INCREMENT,
             `id_cart` INT(11) UNSIGNED NOT NULL,
             `id_product` INT(11) UNSIGNED NOT NULL,
+            `id_product_attribute` INT(11) UNSIGNED DEFAULT 0,
             `license_type` VARCHAR(50) NOT NULL,
             `license_price` DECIMAL(20,6) NOT NULL,
+            `base_price` DECIMAL(20,6) NOT NULL,
+            `price_increase_percent` DECIMAL(5,2) NOT NULL,
             `date_add` DATETIME NOT NULL,
+            `date_upd` DATETIME NOT NULL,
             PRIMARY KEY (`id_cart_product_license`),
+            UNIQUE KEY `cart_product_unique` (`id_cart`, `id_product`, `id_product_attribute`),
             KEY `id_cart` (`id_cart`),
             KEY `id_product` (`id_product`)
         ) ENGINE=" . _MYSQL_ENGINE_ . " DEFAULT CHARSET=utf8mb4;";
@@ -498,6 +453,7 @@ if (isset($product['price_amount'])) {
             `id_order_product_license` INT(11) UNSIGNED NOT NULL AUTO_INCREMENT,
             `id_order` INT(11) UNSIGNED NOT NULL,
             `id_product` INT(11) UNSIGNED NOT NULL,
+            `id_product_attribute` INT(11) UNSIGNED DEFAULT 0,
             `license_type` VARCHAR(50) NOT NULL,
             `license_price` DECIMAL(20,6) NOT NULL,
             `date_add` DATETIME NOT NULL,
@@ -507,6 +463,66 @@ if (isset($product['price_amount'])) {
         ) ENGINE=" . _MYSQL_ENGINE_ . " DEFAULT CHARSET=utf8mb4;";
         
         return Db::getInstance()->execute($sql);
+    }
+
+    private function createLicenseKeysTable()
+    {
+        $sql = "CREATE TABLE IF NOT EXISTS `" . _DB_PREFIX_ . "product_license_keys` (
+            `id_license_key` INT(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+            `id_order` INT(11) UNSIGNED NOT NULL,
+            `id_product` INT(11) UNSIGNED NOT NULL,
+            `license_key` VARCHAR(255) NOT NULL,
+            `license_type` VARCHAR(50) NOT NULL,
+            `is_active` TINYINT(1) NOT NULL DEFAULT 1,
+            `date_add` DATETIME NOT NULL,
+            `date_activated` DATETIME DEFAULT NULL,
+            PRIMARY KEY (`id_license_key`),
+            UNIQUE KEY `license_key` (`license_key`),
+            KEY `id_order` (`id_order`),
+            KEY `id_product` (`id_product`)
+        ) ENGINE=" . _MYSQL_ENGINE_ . " DEFAULT CHARSET=utf8mb4;";
+        
+        return Db::getInstance()->execute($sql);
+    }
+
+    // ========== PRIVATE METHODS - HELPERS ==========
+
+    private function buildLicenseOptions($base_price)
+    {
+        return [
+            'personal' => [
+                'name' => $this->l('Personal License'),
+                'increase' => (int)Configuration::get('PRODUCT_LICENSE_PERSONAL'),
+                'price' => $base_price * (1 + Configuration::get('PRODUCT_LICENSE_PERSONAL') / 100),
+                'description' => $this->l('For personal use only. Cannot be used in commercial projects.')
+            ],
+            'commercial' => [
+                'name' => $this->l('Commercial License'),
+                'increase' => (int)Configuration::get('PRODUCT_LICENSE_COMMERCIAL'),
+                'price' => $base_price * (1 + Configuration::get('PRODUCT_LICENSE_COMMERCIAL') / 100),
+                'description' => $this->l('For use in commercial projects. Includes commercial rights.')
+            ],
+            'extended' => [
+                'name' => $this->l('Extended License'),
+                'increase' => (int)Configuration::get('PRODUCT_LICENSE_EXTENDED'),
+                'price' => $base_price * (1 + Configuration::get('PRODUCT_LICENSE_EXTENDED') / 100),
+                'description' => $this->l('Full rights including resale and redistribution. Unlimited usage.')
+            ]
+        ];
+    }
+
+    private function getLicenseIncrease($license_type)
+    {
+        switch ($license_type) {
+            case 'personal':
+                return (float)Configuration::get('PRODUCT_LICENSE_PERSONAL');
+            case 'commercial':
+                return (float)Configuration::get('PRODUCT_LICENSE_COMMERCIAL');
+            case 'extended':
+                return (float)Configuration::get('PRODUCT_LICENSE_EXTENDED');
+            default:
+                return 0;
+        }
     }
 
     private function getLicenseStatus($id_product)
@@ -542,12 +558,15 @@ if (isset($product['price_amount'])) {
         }
     }
 
-    private function saveCartLicenseInfo($id_cart, $id_product, $license_type, $license_price)
+    private function saveCartLicenseInfo($id_cart, $id_product, $license_type, $license_price, $id_product_attribute = 0, $base_price = 0, $increase = 0)
     {
+        $now = date('Y-m-d H:i:s');
+        
         $existing = Db::getInstance()->getValue(
             "SELECT id_cart_product_license FROM `" . _DB_PREFIX_ . "cart_product_license` 
              WHERE id_cart = " . (int)$id_cart . " 
-             AND id_product = " . (int)$id_product
+             AND id_product = " . (int)$id_product . "
+             AND id_product_attribute = " . (int)$id_product_attribute
         );
         
         if ($existing) {
@@ -555,9 +574,12 @@ if (isset($product['price_amount'])) {
                 'cart_product_license',
                 [
                     'license_type' => pSQL($license_type),
-                    'license_price' => (float)$license_price
+                    'license_price' => (float)$license_price,
+                    'base_price' => (float)$base_price,
+                    'price_increase_percent' => (float)$increase,
+                    'date_upd' => $now
                 ],
-                'id_cart = ' . (int)$id_cart . ' AND id_product = ' . (int)$id_product
+                'id_cart = ' . (int)$id_cart . ' AND id_product = ' . (int)$id_product . ' AND id_product_attribute = ' . (int)$id_product_attribute
             );
         } else {
             return Db::getInstance()->insert(
@@ -565,102 +587,94 @@ if (isset($product['price_amount'])) {
                 [
                     'id_cart' => (int)$id_cart,
                     'id_product' => (int)$id_product,
+                    'id_product_attribute' => (int)$id_product_attribute,
                     'license_type' => pSQL($license_type),
                     'license_price' => (float)$license_price,
-                    'date_add' => date('Y-m-d H:i:s')
+                    'base_price' => (float)$base_price,
+                    'price_increase_percent' => (float)$increase,
+                    'date_add' => $now,
+                    'date_upd' => $now
                 ]
             );
         }
     }
 
-    public function getCartLicenseInfo($id_cart, $id_product)
+    public function getCartLicenseInfo($id_cart, $id_product, $id_product_attribute = 0)
     {
         return Db::getInstance()->getRow(
             "SELECT * FROM `" . _DB_PREFIX_ . "cart_product_license` 
              WHERE id_cart = " . (int)$id_cart . " 
-             AND id_product = " . (int)$id_product
+             AND id_product = " . (int)$id_product . "
+             AND id_product_attribute = " . (int)$id_product_attribute
         );
     }
-    
-    /**
-     * Public wrappers for use in AJAX handlers
-     */
-    public function saveCartLicenseInfoPublic($id_cart, $id_product, $license_type, $license_price)
-    {
-        return $this->saveCartLicenseInfo($id_cart, $id_product, $license_type, $license_price);
-    }
-    
-    public function updateCartProductPricePublic($cart, $id_product, $license_price)
-    {
-        return $this->updateCartProductPrice($cart, $id_product, $license_price);
-    }
 
-    private function saveOrderLicenseInfo($id_order, $id_product, $license_type, $license_price)
+    private function saveOrderLicenseInfo($id_order, $id_product, $license_type, $license_price, $id_product_attribute = 0)
     {
         return Db::getInstance()->insert(
             'order_product_license',
             [
                 'id_order' => (int)$id_order,
                 'id_product' => (int)$id_product,
+                'id_product_attribute' => (int)$id_product_attribute,
                 'license_type' => pSQL($license_type),
                 'license_price' => (float)$license_price,
                 'date_add' => date('Y-m-d H:i:s')
             ]
         );
     }
-    
-    /**
-     * Update product price in cart based on license
-     */
-    private function createSpecificPriceForCart($cart, $id_product, $new_price)
+
+    private function getOrderLicenses($id_order)
     {
-        // Get product original price
-        $product = new Product($id_product);
-        $original_price = $product->getPrice(false);
-        
-        // Calculate reduction
-        $reduction = $original_price - $new_price;
-        
-        // Delete existing specific price for this cart/product
-        Db::getInstance()->execute(
-            "DELETE FROM `" . _DB_PREFIX_ . "specific_price` 
-             WHERE id_product = " . (int)$id_product . " 
-             AND id_cart = " . (int)$cart->id
+        return Db::getInstance()->executeS(
+            "SELECT opl.*, plk.license_key, plk.is_active, p.name as product_name
+             FROM `" . _DB_PREFIX_ . "order_product_license` opl
+             LEFT JOIN `" . _DB_PREFIX_ . "product_license_keys` plk 
+                ON opl.id_order = plk.id_order AND opl.id_product = plk.id_product
+             LEFT JOIN `" . _DB_PREFIX_ . "product_lang` p 
+                ON opl.id_product = p.id_product AND p.id_lang = " . (int)$this->context->language->id . "
+             WHERE opl.id_order = " . (int)$id_order
         );
+    }
+
+    private function generateLicenseKey($id_order, $id_product)
+    {
+        $unique = false;
+        $license_key = '';
         
-        // Only create if there's a price difference
-        if (abs($reduction) > 0.01) {
-            try {
-                // Insert specific price
-                Db::getInstance()->insert(
-                    'specific_price',
-                    [
-                        'id_product' => (int)$id_product,
-                        'id_shop' => (int)$this->context->shop->id,
-                        'id_cart' => (int)$cart->id,
-                        'id_customer' => (int)$cart->id_customer,
-                        'id_currency' => 0,
-                        'id_country' => 0,
-                        'id_group' => 0,
-                        'id_product_attribute' => 0,
-                        'price' => $new_price,
-                        'from_quantity' => 1,
-                        'reduction' => 0,
-                        'reduction_tax' => 1,
-                        'reduction_type' => 'amount',
-                        'from' => date('Y-m-d 00:00:00'),
-                        'to' => date('Y-m-d 23:59:59', strtotime('+1 day'))
-                    ]
-                );
-                
-                // Clear price cache
-                Product::flushPriceCache();
-                
-                PrestaShopLogger::addLog('ProductLicenses: Created specific price for product ' . $id_product . ' = ' . $new_price);
-                
-            } catch (Exception $e) {
-                PrestaShopLogger::addLog('ProductLicenses: Error creating specific price - ' . $e->getMessage(), 3);
+        while (!$unique) {
+            $part1 = strtoupper(substr(md5($id_order . $id_product . time() . rand()), 0, 8));
+            $part2 = strtoupper(substr(md5($id_order . $id_product . time() . rand()), 8, 8));
+            $part3 = strtoupper(substr(md5($id_order . $id_product . time() . rand()), 16, 8));
+            
+            $license_key = $part1 . '-' . $part2 . '-' . $part3;
+            
+            // Check if key exists
+            $exists = Db::getInstance()->getValue(
+                "SELECT id_license_key FROM `" . _DB_PREFIX_ . "product_license_keys` 
+                 WHERE license_key = '" . pSQL($license_key) . "'"
+            );
+            
+            if (!$exists) {
+                $unique = true;
             }
         }
+        
+        return $license_key;
+    }
+
+    private function saveLicenseKey($id_order, $id_product, $license_key, $license_type)
+    {
+        return Db::getInstance()->insert(
+            'product_license_keys',
+            [
+                'id_order' => (int)$id_order,
+                'id_product' => (int)$id_product,
+                'license_key' => pSQL($license_key),
+                'license_type' => pSQL($license_type),
+                'is_active' => 1,
+                'date_add' => date('Y-m-d H:i:s')
+            ]
+        );
     }
 }
